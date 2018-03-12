@@ -105,22 +105,9 @@
 The result is a string.
 
 When ADD-OUTPUT is non-nil, add the standard output to the result."
-  (require 'cider)
-  (unless (eq major-mode 'clojurescript-mode)
-    (add-hook 'cider-connected-hook #'lispy--clojure-middleware-load))
   (let (deactivate-mark)
     (if (null (cider-default-connection t))
-        (progn
-          (setq lispy--clojure-hook-lambda
-                `(lambda ()
-                   (set-window-configuration
-                    ,(current-window-configuration))
-                   (message
-                    (lispy--eval-clojure-1 ,str ,add-output))))
-          (add-hook 'nrepl-connected-hook
-                    'lispy--clojure-eval-hook-lambda t)
-          (cider-jack-in)
-          "Starting CIDER...")
+        (user-error "No cider connection")
       (lispy--eval-clojure-1 str add-output))))
 
 ;;* Base eval
@@ -351,14 +338,18 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
           (error res)
         (setq lispy--clojure-middleware-loaded-p t)
         (add-hook 'nrepl-disconnected-hook #'lispy--clojure-middleware-unload)
-        (let ((sources-expr
-               (format
-                "(do \n  %s)"
-                (mapconcat
-                 (lambda (p) (format "(cemerick.pomegranate/add-classpath %S)" p))
-                 cider-jdk-src-paths
-                 "\n  "))))
-          (lispy--eval-clojure sources-expr))))))
+
+        ;; cider-jdk-source-paths doesn't exist in cider 0.16.0
+
+        ;; (let ((sources-expr
+        ;;        (format
+        ;;         "(do \n  %s)"
+        ;;         (mapconcat
+        ;;          (lambda (p) (format "(cemerick.pomegranate/add-classpath %S)" p))
+        ;;          cider-jdk-src-paths
+        ;;          "\n  "))))
+        ;;   (lispy--eval-clojure sources-expr))
+        ))))
 
 (defun lispy-flatten--clojure (_arg)
   "Inline a Clojure function at the point of its call."
