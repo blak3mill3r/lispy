@@ -120,8 +120,8 @@ When ADD-OUTPUT is non-nil, add the standard output to the result."
                     (lispy--eval-clojure-1 ,str ,add-output))))
           (add-hook 'nrepl-connected-hook
                     'lispy--clojure-eval-hook-lambda t)
-          (call-interactively 'cider-jack-in)
-          "Starting CIDER...")
+          ;; do not try to jack in for me... that's annoying
+          nil)
       (unless lispy--clojure-middleware-loaded-p
         (lispy--clojure-middleware-load))
       (lispy--eval-clojure-1 str add-output))))
