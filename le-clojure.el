@@ -26,6 +26,7 @@
 (require 'lispy)
 (require 'cider-client nil t)
 (require 'cider-interaction nil t)
+(require 'cider-eval nil t)
 
 (defcustom lispy-clojure-eval-method 'cider
   "REPL used for eval."
@@ -98,7 +99,11 @@
     (cider-add-to-alist 'cider-jack-in-dependencies
      "org.tcrawley/dynapath" "0.2.5")
     (cider-add-to-alist 'cider-jack-in-dependencies
-     "com.cemerick/pomegranate" "0.4.0")))
+     "com.cemerick/pomegranate" "0.4.0")
+    (cider-add-to-alist 'cider-jack-in-dependencies
+     "compliment" "0.3.6")
+    (cider-add-to-alist 'cider-jack-in-dependencies
+     "me.raynes/fs" "1.4.6")))
 
 (defun lispy--eval-clojure (str &optional add-output)
   "Eval STR as Clojure code.
@@ -108,6 +113,18 @@ When ADD-OUTPUT is non-nil, add the standard output to the result."
   (let (deactivate-mark)
     (if (null (cider-default-connection t))
         (user-error "No cider connection")
+      ;;    (setq lispy--clojure-hook-lambda
+      ;;          `(lambda ()
+      ;;             (set-window-configuration
+      ;;              ,(current-window-configuration))
+      ;;             (message
+      ;;              (lispy--eval-clojure-1 ,str ,add-output))))
+      ;;    (add-hook 'nrepl-connected-hook
+      ;;              'lispy--clojure-eval-hook-lambda t)
+      ;;    (call-interactively 'cider-jack-in)
+      ;;    "Starting CIDER...")
+      ;;(unless lispy--clojure-middleware-loaded-p
+      ;;  (lispy--clojure-middleware-load))
       (lispy--eval-clojure-1 str add-output))))
 
 ;;* Base eval
@@ -164,18 +181,10 @@ When ADD-OUTPUT is non-nil, add the standard output to the result."
 
 ;;* Handle NREPL version incompat
 (defun lispy--eval-nrepl-clojure (str &optional namespace)
-  (condition-case nil
-      (with-no-warnings
-        (nrepl-sync-request:eval
-         str
-         (cider-current-connection)
-         (cider-current-session)
-         namespace))
-    (error
-     (nrepl-sync-request:eval
-      str
-      (cider-current-connection)
-      namespace))))
+  (nrepl-sync-request:eval
+   str
+   (cider-current-connection)
+   namespace))
 
 (defvar spiral-conn-id)
 (defvar spiral-aux-sync-request-timeout)
@@ -327,29 +336,35 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
 
 (defvar cider-jdk-src-paths)
 
+(defun lispy-cider-load-file (filename)
+  (let ((ns-form  (cider-ns-form)))
+    (cider-map-repls :auto
+      (lambda (connection)
+        (when ns-form
+          (cider-repl--cache-ns-form ns-form connection))
+        (cider-request:load-file (cider--file-string filename)
+                                 (funcall cider-to-nrepl-filename-function
+                                          (cider--server-filename filename))
+                                 (file-name-nondirectory filename)
+                                 connection)))))
+
 (defun lispy--clojure-middleware-load ()
   "Load the custom Clojure code in \"lispy-clojure.clj\"."
   (unless lispy--clojure-middleware-loaded-p
     (setq lispy--clojure-ns "user")
-    (let ((res (lispy--eval-clojure
-                (format "(load-file \"%s\")"
-                        (expand-file-name "lispy-clojure.clj" lispy-site-directory)))))
-      (if lispy--clojure-errorp
-          (error res)
-        (setq lispy--clojure-middleware-loaded-p t)
-        (add-hook 'nrepl-disconnected-hook #'lispy--clojure-middleware-unload)
-
-        ;; cider-jdk-source-paths doesn't exist in cider 0.16.0
-
-        ;; (let ((sources-expr
-        ;;        (format
-        ;;         "(do \n  %s)"
-        ;;         (mapconcat
-        ;;          (lambda (p) (format "(cemerick.pomegranate/add-classpath %S)" p))
-        ;;          cider-jdk-src-paths
-        ;;          "\n  "))))
-        ;;   (lispy--eval-clojure sources-expr))
-        ))))
+    (save-window-excursion
+      (lispy-cider-load-file
+       (expand-file-name "lispy-clojure.clj" lispy-site-directory)))
+    (setq lispy--clojure-middleware-loaded-p t)
+    (add-hook 'nrepl-disconnected-hook #'lispy--clojure-middleware-unload)
+    (let ((sources-expr
+           (format
+            "(do \n  %s)"
+            (mapconcat
+             (lambda (p) (format "(cemerick.pomegranate/add-classpath %S)" p))
+             cider-jdk-src-paths
+             "\n  "))))
+      (lispy--eval-clojure sources-expr))))
 
 (defun lispy-flatten--clojure (_arg)
   "Inline a Clojure function at the point of its call."
@@ -433,56 +448,58 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
   (cider-find-var nil symbol))
 
 (defun lispy-clojure-complete-at-point ()
-  (lispy--clojure-detect-ns)
-  (let* ((lispy-ignore-whitespace t)
-         (bnd (or (bounds-of-thing-at-point 'symbol)
-                  (cons (point) (point))))
-         (obj (cond
-                ((save-excursion
-                   (lispy--out-backward 1)
-                   (looking-at "(\\.\\."))
-                 (concat
-                  (buffer-substring-no-properties (match-beginning 0) (car bnd))
-                  ")"))
-                ((save-excursion
-                   (lispy--back-to-paren)
-                   (when (looking-at "(\\.[\t\n ]")
-                     (ignore-errors
-                       (forward-char 1)
-                       (forward-sexp 2)
-                       (lispy--string-dwim)))))))
-         res)
-    (cond ((and obj
-                (setq res (lispy--eval-clojure
-                           (format "(lispy-clojure/object-members %s)" obj)))
-                (null lispy--clojure-errorp))
-           (let ((cands (read res)))
-             (when (> (cdr bnd) (car bnd))
-               (setq cands (all-completions (lispy--string-dwim bnd) cands)))
-             (list (car bnd) (cdr bnd) cands)))
-          ((save-excursion
-             (lispy--out-backward 2)
-             (looking-at "(import"))
-           (let* ((prefix (save-excursion
-                            (lispy--out-backward 1)
-                            (forward-char)
-                            (thing-at-point 'symbol t)))
-                  (cands (read (lispy--eval-clojure
-                                (format
-                                 "(lispy-clojure/complete %S)"
-                                 prefix))))
-                  (len (1+ (length prefix)))
-                  (candsa (mapcar (lambda (s) (substring s len)) cands)))
-             (when (> (cdr bnd) (car bnd))
-               (setq candsa (all-completions (lispy--string-dwim bnd) candsa)))
-             (list (car bnd) (cdr bnd) candsa)))
-          (t
-           (let* ((prefix (lispy--string-dwim bnd))
-                  (cands (read (lispy--eval-clojure
-                                (format
-                                 "(lispy-clojure/complete %S)"
-                                 prefix)))))
-             (list (car bnd) (cdr bnd) cands))))))
+  (when (car (cider-connections))
+    (ignore-errors
+      (lispy--clojure-detect-ns)
+      (let* ((lispy-ignore-whitespace t)
+             (bnd (or (bounds-of-thing-at-point 'symbol)
+                      (cons (point) (point))))
+             (obj (cond
+                    ((save-excursion
+                       (lispy--out-backward 1)
+                       (looking-at "(\\.\\."))
+                     (concat
+                      (buffer-substring-no-properties (match-beginning 0) (car bnd))
+                      ")"))
+                    ((save-excursion
+                       (lispy--back-to-paren)
+                       (when (looking-at "(\\.[\t\n ]")
+                         (ignore-errors
+                           (forward-char 1)
+                           (forward-sexp 2)
+                           (lispy--string-dwim)))))))
+             res)
+        (cond ((and obj
+                    (setq res (lispy--eval-clojure
+                               (format "(lispy-clojure/object-members %s)" obj)))
+                    (null lispy--clojure-errorp))
+               (let ((cands (read res)))
+                 (when (> (cdr bnd) (car bnd))
+                   (setq cands (all-completions (lispy--string-dwim bnd) cands)))
+                 (list (car bnd) (cdr bnd) cands)))
+              ((save-excursion
+                 (lispy--out-backward 2)
+                 (looking-at "(import"))
+               (let* ((prefix (save-excursion
+                                (lispy--out-backward 1)
+                                (forward-char)
+                                (thing-at-point 'symbol t)))
+                      (cands (read (lispy--eval-clojure
+                                    (format
+                                     "(lispy-clojure/complete %S)"
+                                     prefix))))
+                      (len (1+ (length prefix)))
+                      (candsa (mapcar (lambda (s) (substring s len)) cands)))
+                 (when (> (cdr bnd) (car bnd))
+                   (setq candsa (all-completions (lispy--string-dwim bnd) candsa)))
+                 (list (car bnd) (cdr bnd) candsa)))
+              (t
+               (let* ((prefix (lispy--string-dwim bnd))
+                      (cands (read (lispy--eval-clojure
+                                    (format
+                                     "(lispy-clojure/complete %S)"
+                                     prefix)))))
+                 (list (car bnd) (cdr bnd) cands))))))))
 
 (defun lispy--clojure-dot-args ()
   (save-excursion
@@ -495,7 +512,7 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
                      (lispy--string-dwim)))
            (sig (read
                  (lispy--eval-clojure
-                  (format "(lispy-clojure/method-signature %s \"%s\")" object method)))))
+                  (format "(lispy-clojure/method-signature (lispy-clojure/reval \"%s\" nil) \"%s\")" object method)))))
       (when (> (length sig) 0)
         (if (string-match "\\`public \\(.*\\)(\\(.*\\))\\'" sig)
             (let ((name (match-string 1 sig))

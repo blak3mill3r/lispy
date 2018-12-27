@@ -31,21 +31,17 @@
   (add-dependencies
     :coordinates [[name version]]
     :repositories (merge cemerick.pomegranate.aether/maven-central
-                         {"clojars" "https://clojars.org/repo"})))
+                         {"clojars" "https://clojars.org/repo"})
+    :classloader (. (. (. Compiler/LOADER deref) getParent) getParent)))
 
 (defn expand-file-name [name dir]
   (. (io/file dir name) getCanonicalPath))
 
-(use-package 'compliment "0.3.5")
+(use-package 'compliment "0.3.6")
 (require '[compliment.core :as compliment])
 
 (use-package 'me.raynes/fs "1.4.6")
 (require '[me.raynes.fs :as fs])
-
-(cemerick.pomegranate/add-classpath
-  (expand-file-name "../lib/tools.jar" (System/getProperty "java.home")))
-(use-package 'cider/cider-nrepl "0.16.0")
-(require '[cider.nrepl.middleware.util.java.parser :as parser])
 
 (defmacro xcond [& clauses]
   "Common Lisp style `cond'.
@@ -305,7 +301,7 @@ malleable to refactoring."
   (. obj getDeclaredConstructors))
 
 (defn format-ctor [s]
-  (let [[_ name args] (re-find #"public (.*)\((.*)\)" s)]
+  (let [[_ name args] (re-find #"(?:public|protected) (.*)\((.*)\)" s)]
     (str name
          "."
          (if (= args "")
@@ -453,7 +449,7 @@ malleable to refactoring."
               (vector? expr)
               (= 2 (count expr)))
          (shadow-dest
-           [(first expr) (first (second expr))]))
+           [(first expr) (first (eval `(with-shadows ~(second expr))))]))
         ((and (#{'dotimes} (first context))
               (vector? expr)
               (= 2 (count expr)))
@@ -536,32 +532,33 @@ malleable to refactoring."
             (list (:l-file m) (:l-line m)))
            ((and (:file m) (not (re-matches #"^/tmp/" (:file m))))
             (list (file->elisp (:file m)) (:line m)))
-           ((class? rs)
-            (let [sym (symbol (class-name rs))
-                  info (parser/source-info sym)]
-              (list
-                (file->elisp
-                  (:file info))
-                (:line info))))
-           ((nil? rs)
-            (let [name (str sym)
-                  [cls method] (str/split name #"/")
-                  file (-> (clojure.core/symbol cls)
-                           (resolve)
-                           (class-name)
-                           (parser/source-path)
-                           (file->elisp))
-                  line (-> (symbol cls)
-                           (resolve)
-                           (class-name)
-                           (symbol)
-                           (parser/source-info)
-                           (:members)
-                           (get (clojure.core/symbol method))
-                           (vals)
-                           (first)
-                           (:line))]
-              (list file line))))))
+           ;; ((class? rs)
+           ;;  (let [sym (symbol (class-name rs))
+           ;;        info (parser/source-info sym)]
+           ;;    (list
+           ;;      (file->elisp
+           ;;        (:file info))
+           ;;      (:line info))))
+           ;; ((nil? rs)
+           ;;  (let [name (str sym)
+           ;;        [cls method] (str/split name #"/")
+           ;;        file (-> (clojure.core/symbol cls)
+           ;;                 (resolve)
+           ;;                 (class-name)
+           ;;                 (parser/source-path)
+           ;;                 (file->elisp))
+           ;;        line (-> (symbol cls)
+           ;;                 (resolve)
+           ;;                 (class-name)
+           ;;                 (symbol)
+           ;;                 (parser/source-info)
+           ;;                 (:members)
+           ;;                 (get (clojure.core/symbol method))
+           ;;                 (vals)
+           ;;                 (first)
+           ;;                 (:line))]
+           ;;    (list file line)))
+           )))
 
 (defn pp [expr]
   (with-out-str

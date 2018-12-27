@@ -24,21 +24,27 @@
 
 ;;; Code:
 
-(if (version< emacs-version "24.4")
+(if (version< emacs-version "26.1")
     (progn
-      (defsubst string-trim-left (string)
-        "Remove leading whitespace from STRING."
-        (if (string-match "\\`[ \t\n\r]+" string)
+      (defsubst string-trim-left (string &optional regexp)
+        "Trim STRING of leading string matching REGEXP.
+
+REGEXP defaults to \"[ \\t\\n\\r]+\"."
+        (if (string-match (concat "\\`\\(?:" (or regexp "[ \t\n\r]+") "\\)") string)
             (replace-match "" t t string)
           string))
-      (defsubst string-trim-right (string)
-        "Remove trailing whitespace from STRING."
-        (if (string-match "[ \t\n\r]+\\'" string)
+      (defsubst string-trim-right (string &optional regexp)
+        "Trim STRING of trailing string matching REGEXP.
+
+REGEXP defaults to  \"[ \\t\\n\\r]+\"."
+        (if (string-match (concat "\\(?:" (or regexp "[ \t\n\r]+") "\\)\\'") string)
             (replace-match "" t t string)
           string))
-      (defsubst string-trim (string)
-        "Remove leading and trailing whitespace from STRING."
-        (string-trim-left (string-trim-right string))))
+      (defsubst string-trim (string &optional trim-left trim-right)
+        "Trim STRING of leading and trailing strings matching TRIM-LEFT and TRIM-RIGHT.
+
+TRIM-LEFT and TRIM-RIGHT default to \"[ \\t\\n\\r]+\"."
+        (string-trim-left (string-trim-right string trim-right) trim-left)))
   (require 'subr-x))
 
 (defgroup lispy-faces nil
@@ -101,7 +107,8 @@ The caller of `lispy--show' might use a substitute e.g. `describe-function'."
   :group 'lispy)
 
 (defvar lispy-elisp-modes
-  '(emacs-lisp-mode lisp-interaction-mode eltex-mode minibuffer-inactive-mode)
+  '(emacs-lisp-mode lisp-interaction-mode eltex-mode minibuffer-inactive-mode
+                    suggest-mode)
   "Modes for which `lispy--eval-elisp' and related functions are appropriate.")
 
 (defvar lispy-clojure-modes
@@ -124,6 +131,8 @@ The caller of `lispy--show' might use a substitute e.g. `describe-function'."
 (declare-function lispy--lisp-describe "le-lisp")
 (declare-function lispy--back-to-paren "lispy")
 (declare-function lispy--current-function "lispy")
+(declare-function lispy--in-comment-p "lispy")
+(declare-function lispy--bounds-string "lispy")
 
 ;; ——— Commands ————————————————————————————————————————————————————————————————
 (defun lispy--back-to-python-function ()
@@ -191,7 +200,9 @@ The caller of `lispy--show' might use a substitute e.g. `describe-function'."
     (cond ((region-active-p)
            (goto-char (region-beginning)))
           ((eq major-mode 'python-mode)
-           (goto-char (beginning-of-thing 'sexp)))
+           (condition-case nil
+               (goto-char (beginning-of-thing 'sexp))
+             (error (up-list -1))))
           (t
            (lispy--back-to-paren)))
     (point)))
@@ -265,18 +276,21 @@ The caller of `lispy--show' might use a substitute e.g. `describe-function'."
      (require 'le-lisp)
      (lispy--lisp-describe sym))
     ((eq major-mode 'python-mode)
-     (semantic-mode 1)
-     (let ((sym (semantic-ctxt-current-symbol)))
-       (if sym
-           (progn
-             (setq sym (mapconcat #'identity sym "."))
-             (require 'le-python)
-             (or
-              (lispy--python-docstring sym)
-              (progn
-                (message "no doc: %s" sym)
-                nil)))
-         (error "The point is not on a symbol"))))
+     (require 'le-python)
+     (if sym
+         (lispy--python-docstring sym)
+       (require 'semantic)
+       (semantic-mode 1)
+       (let ((sym (semantic-ctxt-current-symbol)))
+         (if sym
+             (progn
+               (setq sym (mapconcat #'identity sym "."))
+               (or
+                (lispy--python-docstring sym)
+                (progn
+                  (message "no doc: %s" sym)
+                  nil)))
+           (error "The point is not on a symbol")))))
     (t
      (format "%s isn't supported currently" major-mode))))
 

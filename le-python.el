@@ -53,8 +53,12 @@ Stripping them will produce code that's valid for an eval."
             ((and (looking-at lispy-outline)
                   (looking-at lispy-outline-header))
              (lispy--bounds-outline))
-            ((looking-at "^def")
-             (setq bnd (lispy-bounds-python-block)))
+            ((looking-at "@")
+             (setq bnd (cons (point)
+                             (save-excursion
+                               (forward-sexp)
+                               (skip-chars-forward "[ \t\n]")
+                               (cdr (lispy-bounds-python-block))))))
             ((setq bnd (lispy-bounds-python-block)))
             ((bolp)
              (lispy--bounds-c-toplevel))
@@ -259,16 +263,20 @@ it at one time."
                          (p1-output (python-shell-send-string-no-output
                                      p1 (lispy--python-proc)))
                          p2-output)
-                    (cond ((null p1-output)
-                           (lispy-message lispy-eval-error))
-                          ((null (setq p2-output (lispy--eval-python p2)))
-                           (lispy-message lispy-eval-error))
-                          (t
-                           (concat
-                            (if (string= p1-output "")
-                                ""
-                              (concat p1-output "\n"))
-                            p2-output)))))
+                    (cond
+                      ((string-match-p "SyntaxError:\\|error:" p1-output)
+                       (python-shell-send-string-no-output
+                        str (lispy--python-proc)))
+                      ((null p1-output)
+                       (lispy-message lispy-eval-error))
+                      ((null (setq p2-output (lispy--eval-python p2)))
+                       (lispy-message lispy-eval-error))
+                      (t
+                       (concat
+                        (if (string= p1-output "")
+                            ""
+                          (concat p1-output "\n"))
+                        p2-output)))))
                  (t
                   (error "unexpected")))))
       (cond
@@ -292,6 +300,13 @@ it at one time."
         ((equal res "")
          (setq lispy-eval-error "(ok)")
          "")
+        ((string-match-p "^<\\(?:map\\|filter\\|generator\\) object" res)
+         (let ((last (car (last (split-string str "\n")))))
+           (when (string-match "\\`print (repr ((\\(.*\\))))\\'" last)
+             (setq str (match-string 1 last))))
+         (lispy--eval-python (format "list(%s)" str) t))
+        ((string-match-p "SyntaxError:" res)
+         nil)
         (t
          (replace-regexp-in-string "\\\\n" "\n" res))))))
 
@@ -344,6 +359,57 @@ it at one time."
      (setcar bnd (point)))
     bnd))
 
+(defun lispy--normalize-files (fs)
+  (cl-sort
+   (cl-set-difference
+    fs
+    '("./" "../") :test #'equal)
+   #'lispy-dir-string<))
+
+(defun lispy--completion-common-len (str)
+  (if (eq (get-text-property 0 'face str)
+          'completions-common-part)
+      (next-property-change 0 str)
+    0))
+
+(defun lispy--complete-fname-1 (str pt)
+  "Try to complete a partial file name in STR at PT.
+Depends on `default-directory'."
+  (with-temp-buffer
+    (insert str)
+    (comint-mode)
+    (let* ((com (comint-filename-completion))
+           (cands
+            (all-completions
+             (buffer-substring-no-properties
+              (nth 0 com)
+              (nth 1 com))
+             (nth 2 com))))
+      (when com
+        (list (- pt (lispy--completion-common-len (car cands)))
+              pt
+              (delete
+               "../"
+               (delete
+                "./"
+                (all-completions
+                 (buffer-substring-no-properties
+                  (nth 0 com)
+                  (nth 1 com))
+                 (nth 2 com)))))))))
+
+(defun lispy--complete-fname ()
+  (let ((ini-bnd (bounds-of-thing-at-point 'filename)))
+    (if ini-bnd
+        (let* ((str-bnd (lispy--bounds-string))
+               (str (buffer-substring-no-properties
+                     (1+ (car str-bnd))
+                     (1- (cdr str-bnd)))))
+          (lispy--complete-fname-1 str (point)))
+      (list (point) (point)
+            (lispy--normalize-files
+             (all-completions "" #'read-file-name-internal))))))
+
 (defun lispy-python-completion-at-point ()
   (cond ((looking-back "^\\(import\\|from\\) .*" (line-beginning-position))
          (let* ((line (buffer-substring-no-properties
@@ -361,16 +427,7 @@ it at one time."
                 (end (if bnd (cdr bnd) (point))))
            (list beg end cands)))
         ((lispy--in-string-p)
-         (let* ((bnd-1 (lispy--bounds-string))
-                (bnd-2 (or (bounds-of-thing-at-point 'symbol)
-                           (cons (point) (point))))
-                (str (buffer-substring-no-properties
-                      (1+ (car bnd-1))
-                      (1- (cdr bnd-1)))))
-           (list (car bnd-2)
-                 (cdr bnd-2)
-                 (cl-sort (delete "./" (all-completions str #'read-file-name-internal))
-                          #'lispy-dir-string<))))
+         (lispy--complete-fname))
         (t
          (let* ((bnd (lispy-python-symbol-bnd))
                 (str (buffer-substring-no-properties
@@ -399,6 +456,8 @@ it at one time."
   (let (res)
     (save-excursion
       (goto-char beg)
+      (skip-chars-forward "\n\t ")
+      (setq beg (point))
       (while (< (point) end)
         (forward-sexp)
         (while (and (< (point) end)
@@ -411,97 +470,108 @@ it at one time."
         (setq beg (point))))
     (nreverse res)))
 
+(defun lispy--python-step-in-loop ()
+  (when (looking-at " ?for \\([A-Z_a-z,0-9 ()]+\\) in \\(.*\\):")
+    (let* ((vars (match-string-no-properties 1))
+           (val (match-string-no-properties 2))
+           (res (lispy--eval-python
+                 (format "lp.list_step(\"%s\",%s)" vars val)
+                 t)))
+      (lispy-message res))))
+
 (defun lispy--python-debug-step-in ()
-  (when (looking-at " *(")
-    ;; tuple assignment
-    (forward-list 1))
-  (re-search-forward "(" (line-end-position))
-  (backward-char)
-  (let* ((p-ar-beg (point))
-         (p-ar-end (save-excursion
-                     (forward-list)
-                     (point)))
-         (p-fn-end (progn
-                     (skip-chars-backward " ")
-                     (point)))
-         (method-p nil)
-         (p-fn-beg (progn
-                     (backward-sexp)
-                     (while (eq (char-before) ?.)
-                       (setq method-p t)
-                       (backward-sexp))
-                     (point)))
-         (fn (buffer-substring-no-properties
-              p-fn-beg p-fn-end))
-         (args
-          (lispy--python-args (1+ p-ar-beg) (1- p-ar-end)))
-         (args (if (and method-p
-                        (string-match "\\`\\(.*?\\)\\.\\([^.]+\\)\\'" fn))
-                   (cons (match-string 1 fn)
-                         args)
-                 args))
-         (args-key (cl-remove-if-not
-                    (lambda (s)
-                      (string-match lispy--python-arg-key-re s))
-                    args))
-         (args-normal (cl-set-difference args args-key))
-         (fn-data
-          (json-read-from-string
-           (substring
-            (lispy--eval-python
-             (format "import inspect, json; json.dumps (inspect.getargspec (%s))"
-                     fn))
-            1 -1)))
-         (fn-args
-          (append (mapcar #'identity (elt fn-data 0))
-                  (if (elt fn-data 1)
-                      (list (elt fn-data 1)))))
-         (fn-defaults
-          (mapcar
-           (lambda (x)
-             (cond ((null x)
-                    "None")
-                   ((eq x t)
-                    "True")
-                   (t
-                    (prin1-to-string x))))
-           (elt fn-data 3)))
-         (fn-alist
-          (cl-mapcar #'cons
-                     fn-args
-                     (append (make-list (- (length fn-args)
-                                           (length fn-defaults))
-                                        nil)
-                             fn-defaults)))
-         fn-alist-x dbg-cmd)
-    (when method-p
-      (unless (member '("self") fn-alist)
-        (push '("self") fn-alist)))
-    (setq fn-alist-x fn-alist)
-    (dolist (arg args-normal)
-      (setcdr (pop fn-alist-x) arg))
-    (dolist (arg args-key)
-      (if (string-match lispy--python-arg-key-re arg)
-          (let ((arg-name (match-string 1 arg))
-                (arg-val (match-string 2 arg))
-                arg-cell)
-            (if (setq arg-cell (assoc arg-name fn-alist))
-                (setcdr arg-cell arg-val)
-              (error "\"%s\" is not in %s" arg-name fn-alist)))
-        (error "\"%s\" does not match the regex spec" arg)))
-    (when (memq nil (mapcar #'cdr fn-alist))
-      (error "Not all args were provided: %s" fn-alist))
-    (setq dbg-cmd
-          (mapconcat (lambda (x)
-                       (format "%s = %s" (car x) (cdr x)))
-                     fn-alist
-                     "; "))
-    (if (lispy--eval-python dbg-cmd t)
-        (progn
-          (goto-char p-fn-end)
-          (lispy-goto-symbol fn))
-      (goto-char p-ar-beg)
-      (message lispy-eval-error))))
+  (unless (lispy--python-step-in-loop)
+    (when (looking-at " *(")
+      ;; tuple assignment
+      (forward-list 1))
+    (re-search-forward "(" (line-end-position))
+    (backward-char)
+    (let* ((p-ar-beg (point))
+           (p-ar-end (save-excursion
+                       (forward-list)
+                       (point)))
+           (p-fn-end (progn
+                       (skip-chars-backward " ")
+                       (point)))
+           (method-p nil)
+           (p-fn-beg (progn
+                       (backward-sexp)
+                       (while (eq (char-before) ?.)
+                         (setq method-p t)
+                         (backward-sexp))
+                       (point)))
+           (fn (buffer-substring-no-properties
+                p-fn-beg p-fn-end))
+           (args
+            (lispy--python-args (1+ p-ar-beg) (1- p-ar-end)))
+           (args (if (and method-p
+                          (string-match "\\`\\(.*?\\)\\.\\([^.]+\\)\\'" fn))
+                     (cons (match-string 1 fn)
+                           args)
+                   args))
+           (args-key (cl-remove-if-not
+                      (lambda (s)
+                        (string-match lispy--python-arg-key-re s))
+                      args))
+           (args-normal (cl-set-difference args args-key))
+           (fn-data
+            (json-read-from-string
+             (substring
+              (lispy--eval-python
+               (format "import inspect, json; json.dumps (inspect.getargspec (%s))"
+                       fn))
+              1 -1)))
+           (fn-args
+            (append (mapcar #'identity (elt fn-data 0))
+                    (if (elt fn-data 1)
+                        (list (elt fn-data 1)))))
+           (fn-defaults
+            (mapcar
+             (lambda (x)
+               (cond ((null x)
+                      "None")
+                     ((eq x t)
+                      "True")
+                     (t
+                      (prin1-to-string x))))
+             (elt fn-data 3)))
+           (fn-alist
+            (cl-mapcar #'cons
+                       fn-args
+                       (append (make-list (- (length fn-args)
+                                             (length fn-defaults))
+                                          nil)
+                               fn-defaults)))
+           fn-alist-x dbg-cmd)
+      (if method-p
+          (unless (member '("self") fn-alist)
+            (push '("self") fn-alist))
+        (setq fn-alist (delete '("self") fn-alist)))
+      (setq fn-alist-x fn-alist)
+      (dolist (arg args-normal)
+        (setcdr (pop fn-alist-x) arg))
+      (dolist (arg args-key)
+        (if (string-match lispy--python-arg-key-re arg)
+            (let ((arg-name (match-string 1 arg))
+                  (arg-val (match-string 2 arg))
+                  arg-cell)
+              (if (setq arg-cell (assoc arg-name fn-alist))
+                  (setcdr arg-cell arg-val)
+                (error "\"%s\" is not in %s" arg-name fn-alist)))
+          (error "\"%s\" does not match the regex spec" arg)))
+      (when (memq nil (mapcar #'cdr fn-alist))
+        (error "Not all args were provided: %s" fn-alist))
+      (setq dbg-cmd
+            (mapconcat (lambda (x)
+                         (format "%s = %s" (car x) (cdr x)))
+                       fn-alist
+                       "; "))
+      (if (lispy--eval-python dbg-cmd t)
+          (progn
+            (goto-char p-fn-end)
+            (lispy-goto-symbol fn))
+        (goto-char p-ar-beg)
+        (message lispy-eval-error)))))
 
 (declare-function deferred:sync! "ext:deferred")
 (declare-function jedi:goto-definition "ext:jedi-core")
@@ -517,7 +587,7 @@ it at one time."
                   t))))
       (if (member res '(nil "Definition not found."))
           (let* ((symbol (python-info-current-symbol))
-                 (symbol-re (concat "^def.*" (car (last (split-string symbol "\\." t)))))
+                 (symbol-re (concat "^\\(?:def\\|class\\).*" (car (last (split-string symbol "\\." t)))))
                  (file (lispy--eval-python
                         (format
                          "import inspect\nprint(inspect.getsourcefile(%s))" symbol))))
