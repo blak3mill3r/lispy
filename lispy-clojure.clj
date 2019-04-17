@@ -22,16 +22,27 @@
             [clojure.pprint]
             [clojure.java.io :as io]
             [clojure.string :as str])
-  (:use [cemerick.pomegranate :only (add-dependencies)])
+  
   (:import (java.io File LineNumberReader InputStreamReader
                     PushbackReader FileInputStream)
            (clojure.lang RT Reflector)))
 
 (defn use-package [name version]
-  (add-dependencies
-    :coordinates [[name version]]
-    :repositories (merge cemerick.pomegranate.aether/maven-central
-                         {"clojars" "https://clojars.org/repo"})))
+  (or
+   (try
+     (require '[clojure.tools.deps.alpha.repl :refer [add-lib]])
+     (add-lib name {:mvn/version version})
+     true
+     (catch Exception e (println "Couldn't add-lib" name version)))
+   (try
+     (use '[cemerick.pomegranate :only (add-dependencies)])
+     (add-dependencies
+      :coordinates [[name version]]
+      :repositories (merge cemerick.pomegranate.aether/maven-central
+                           {"clojars" "https://clojars.org/repo"}))
+     true
+     (catch Exception e (println "Couldn't add-dependencies" name version)))
+   (println "Coudln't use-package " name version " things are going to be broken")))
 
 (defn expand-file-name [name dir]
   (. (io/file dir name) getCanonicalPath))
@@ -42,8 +53,13 @@
 (use-package 'me.raynes/fs "1.4.6")
 (require '[me.raynes.fs :as fs])
 
-(cemerick.pomegranate/add-classpath
-  (expand-file-name "../lib/tools.jar" (System/getProperty "java.home")))
+(try
+  (cemerick.pomegranate/add-classpath
+   (expand-file-name "../lib/tools.jar" (System/getProperty "java.home")))
+  true
+  (catch Exception e (println "Couldn't add tools.jar with pomegranate"))
+  ;; can this be done with add-lib ?
+  )
 (use-package 'cider/orchard "0.3.0")
 (require '[orchard.java.parser :as parser])
 
