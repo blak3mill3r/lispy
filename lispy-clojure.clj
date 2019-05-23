@@ -28,46 +28,46 @@
            (clojure.lang RT Reflector)))
 
 (defn use-package [name version]
-  (or
-   (try
-     (when (find-ns 'cemerick.pomegranate)
-       (use '[cemerick.pomegranate :only (add-dependencies)])
-       (eval `(cemerick.pomegranate/add-dependencies
-               :coordinates [[(quote ~name) ~version]]
-               :repositories (merge cemerick.pomegranate.aether/maven-central
-                                    {"clojars" "https://clojars.org/repo"}))))
-     true
-     (catch Exception e (println "Couldn't add-dependencies" e name version) (throw e)))
-   (try
-     (when (find-ns 'clojure.tools.deps.alpha.repl)
-       
-       (require '[clojure.tools.deps.alpha.repl :refer [add-lib]])
-       (println "lispy-clojure (use-package "name"\""~version"\")")
-       (println (prn-str `(add-lib name {:mvn/version ~version}) ))
-       (eval `(add-lib name {:mvn/version ~version})))
-     true
-     (catch Exception e (println "Couldn't add-lib" name version)))
-   (println "Coudln't use-package " name version " things are going to be broken")))
+  (println "lispy: No use-package, no pomegranate")
+  #_(or
+     (try
+       (when (find-ns 'cemerick.pomegranate)
+         (use '[cemerick.pomegranate :only (add-dependencies)])
+         (eval `(cemerick.pomegranate/add-dependencies
+                 :coordinates [[(quote ~name) ~version]]
+                 :repositories (merge cemerick.pomegranate.aether/maven-central
+                                      {"clojars" "https://clojars.org/repo"}))))
+       true
+       (catch Exception e (println "Couldn't add-dependencies" e name version) (throw e)))
+     (try
+       (when (find-ns 'clojure.tools.deps.alpha.repl)
+         (require '[clojure.tools.deps.alpha.repl :refer [add-lib]])
+         (println "lispy-clojure (use-package "name"\""~version"\")")
+         (println (prn-str `(add-lib name {:mvn/version ~version}) ))
+         (eval `(add-lib name {:mvn/version ~version})))
+       true
+       (catch Exception e (println "Couldn't add-lib" name version)))
+     (println "Coudln't use-package " name version " things are going to be broken")))
 
 (defn expand-file-name [name dir]
   (. (io/file dir name) getCanonicalPath))
 
-(use-package 'compliment "0.3.5")
+#_(use-package 'compliment "0.3.6")
 (require '[compliment.core :as compliment])
 
-(use-package 'me.raynes/fs "1.4.6")
+#_(use-package 'me.raynes/fs "1.4.6")
 (require '[me.raynes.fs :as fs])
 
-(when (find-ns 'cemerick.pomegranate)
-  (eval '(try
-           (cemerick.pomegranate/add-classpath
-            (expand-file-name "../lib/tools.jar" (System/getProperty "java.home")))
-           true
-           (catch Exception e (println "Couldn't add tools.jar with pomegranate"))
-           ;; can this be done with add-lib ?
-           )))
+#_(when (find-ns 'cemerick.pomegranate)
+    (eval '(try
+             (cemerick.pomegranate/add-classpath
+              (expand-file-name "../lib/tools.jar" (System/getProperty "java.home")))
+             true
+             (catch Exception e (println "Couldn't add tools.jar with pomegranate"))
+             ;; can this be done with add-lib ?
+             )))
 
-(use-package 'cider/orchard "0.3.0")
+#_(use-package 'cider/orchard "0.3.0")
 (require '[orchard.java.parser :as parser])
 
 (defmacro xcond [& clauses]
@@ -87,22 +87,23 @@ malleable to refactoring."
              ~@(next clauses)))))))
 
 (defn fetch-packages []
-  (xcond ((fs/exists? "deps.edn")
-          (println "fixme"))
-         ((fs/exists? "project.clj")
-          (let [deps (->> (slurp "project.clj")
-                          (read-string)
-                          (drop 3)
-                          (partition 2)
-                          (map vec)
-                          (into {})
-                          :dependencies)]
-            (doseq [[name ver] deps]
-              (use-package name ver))))
-         (:else
-          (throw
-            (ex-info "Found no project.clj or deps.edn"
-                     {:cwd fs/*cwd*})))))
+  (println "Not doing fetch-packages because I ripped out use-package and pomegranate")
+  #_(xcond ((fs/exists? "deps.edn")
+            (println "fixme"))
+           ((fs/exists? "project.clj")
+            (let [deps (->> (slurp "project.clj")
+                            (read-string)
+                            (drop 3)
+                            (partition 2)
+                            (map vec)
+                            (into {})
+                            :dependencies)]
+              (doseq [[name ver] deps]
+                (use-package name ver))))
+           (:else
+            (throw
+             (ex-info "Found no project.clj or deps.edn"
+                      {:cwd fs/*cwd*})))))
 
 (defn expand-home
   [path]
@@ -328,7 +329,7 @@ malleable to refactoring."
   (. obj getDeclaredConstructors))
 
 (defn format-ctor [s]
-  (let [[_ name args] (re-find #"public (.*)\((.*)\)" s)]
+  (let [[_ name args] (re-find #"(?:public|protected) (.*)\((.*)\)" s)]
     (str name
          "."
          (if (= args "")
@@ -463,10 +464,13 @@ malleable to refactoring."
          `(fetch-packages))
         ((nil? idx)
          expr)
+        ;; [x |(+ 1 2) y (+ 3 4)] => {:x 3}
+        ;; TODO: would be better to have 1 level higher context, so that we just check
+        ;; (= (first context) 'let)
         ((and (vector? context)
-              (not (symbol? (context idx)))
-              ((some-fn symbol? vector? map?)
-               (context (dec idx))))
+              (= 0 (rem (count context) 2))
+              (= 0 (rem (inc idx) 2))
+              (every? (some-fn symbol? vector? map?) (take-nth 2 context)))
          (shadow-dest
            (take 2 (drop (- idx 1) context))))
         ((or (nil? context)
@@ -476,7 +480,7 @@ malleable to refactoring."
               (vector? expr)
               (= 2 (count expr)))
          (shadow-dest
-           [(first expr) (first (second expr))]))
+           [(first expr) (first (eval `(with-shadows ~(second expr))))]))
         ((and (#{'dotimes} (first context))
               (vector? expr)
               (= 2 (count expr)))
@@ -507,18 +511,17 @@ malleable to refactoring."
                 expr-map)
         ~@expr-tail))))
 
-(defn add-location-to-def [expr file line]
-  (let [name (nth expr 1)
-        [doc init] (if (and (string? (nth expr 2)) (> (count expr) 3))
-                     (rest expr)
-                     (cons "" (drop 2 expr)))]
-    (list 'def
-          (with-meta
-            name
-            {:l-file file
-             :l-line line})
-          doc
-          init)))
+(defn add-location-to-def
+  [[_def name & args] file line]
+  (apply list
+         _def
+         (with-meta
+           name
+           {:l-file file
+            :l-line line})
+         (if (> (count args) 1)
+           args
+           (cons "" args))))
 
 (defn add-location-to-deflike [expr file line]
   (when (and file line (list? expr))
@@ -526,6 +529,17 @@ malleable to refactoring."
             (add-location-to-def expr file line))
            ((= (first expr) 'defn)
             (add-location-to-defn expr file line)))))
+
+(defn read-string-all
+  "Read all objects from the string S."
+  [s]
+  (let [reader (java.io.PushbackReader.
+                 (java.io.StringReader. s))]
+    (loop [res []]
+      (if-let [x (try (read reader)
+                      (catch Exception e))]
+        (recur (conj res x))
+        res))))
 
 (defn reval [e-str context-str & {:keys [file line]}]
   (let [expr (read-string e-str)
@@ -559,32 +573,33 @@ malleable to refactoring."
             (list (:l-file m) (:l-line m)))
            ((and (:file m) (not (re-matches #"^/tmp/" (:file m))))
             (list (file->elisp (:file m)) (:line m)))
-           ((class? rs)
-            (let [sym (symbol (class-name rs))
-                  info (parser/source-info sym)]
-              (list
-                (file->elisp
-                  (:file info))
-                (:line info))))
-           ((nil? rs)
-            (let [name (str sym)
-                  [cls method] (str/split name #"/")
-                  file (-> (clojure.core/symbol cls)
-                           (resolve)
-                           (class-name)
-                           (parser/source-path)
-                           (file->elisp))
-                  line (-> (symbol cls)
-                           (resolve)
-                           (class-name)
-                           (symbol)
-                           (parser/source-info)
-                           (:members)
-                           (get (clojure.core/symbol method))
-                           (vals)
-                           (first)
-                           (:line))]
-              (list file line))))))
+           ;; ((class? rs)
+           ;;  (let [sym (symbol (class-name rs))
+           ;;        info (parser/source-info sym)]
+           ;;    (list
+           ;;      (file->elisp
+           ;;        (:file info))
+           ;;      (:line info))))
+           ;; ((nil? rs)
+           ;;  (let [name (str sym)
+           ;;        [cls method] (str/split name #"/")
+           ;;        file (-> (clojure.core/symbol cls)
+           ;;                 (resolve)
+           ;;                 (class-name)
+           ;;                 (parser/source-path)
+           ;;                 (file->elisp))
+           ;;        line (-> (symbol cls)
+           ;;                 (resolve)
+           ;;                 (class-name)
+           ;;                 (symbol)
+           ;;                 (parser/source-info)
+           ;;                 (:members)
+           ;;                 (get (clojure.core/symbol method))
+           ;;                 (vals)
+           ;;                 (first)
+           ;;                 (:line))]
+           ;;    (list file line)))
+           )))
 
 (defn pp [expr]
   (with-out-str

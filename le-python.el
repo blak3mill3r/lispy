@@ -92,17 +92,29 @@ Stripping them will produce code that's valid for an eval."
                (cl-incf rp))
               (t
                (error "Unexpected"))))
-      (buffer-substring-no-properties (car bnd) (point)))))
+      (if (lispy-after-string-p ")")
+          (let ((end (point)))
+            (save-excursion
+              (forward-sexp -1)
+              (concat (buffer-substring-no-properties
+                       (car bnd) (point))
+                      (replace-regexp-in-string
+                       "[\\]*\n[\t ]*" " "
+                       (buffer-substring-no-properties
+                        (point) end)))))
+        (buffer-substring-no-properties (car bnd) (point))))))
 
 (defun lispy-eval-python-str ()
   (let* ((bnd (lispy-eval-python-bnd))
          (str1 (lispy-trim-python
                 (lispy-extended-eval-str bnd)))
          (str1.5 (replace-regexp-in-string "^ *#[^\n]+\n" "" str1))
-         (str2 (replace-regexp-in-string "\\\\\n +" "" str1.5))
-         (str3 (replace-regexp-in-string "\n *\\([])}]\\)" "\\1" str2))
-         (str4 (replace-regexp-in-string "\\([({[,]\\)\n +" "\\1" str3)))
-    str4))
+         ;; (str2 (replace-regexp-in-string "\\\\\n +" "" str1.5))
+         ;; (str3 (replace-regexp-in-string "\n *\\([])}]\\)" "\\1" str2))
+         ;; (str4 (replace-regexp-in-string "\\([({[,]\\)\n +" "\\1" str3))
+         ;; (str5 (replace-regexp-in-string "\"\n *\"" "\" \"" str4))
+         )
+    str1.5))
 
 (defun lispy-bounds-python-block ()
   (if (save-excursion
@@ -129,7 +141,9 @@ Stripping them will produce code that's valid for an eval."
              (goto-char (match-beginning 1))
              (python-nav-end-of-block))
            (point))))
-    (cons (point)
+    (cons (if (looking-at " ")
+              (1+ (point))
+            (point))
           (save-excursion
             (end-of-line)
             (let (bnd)
@@ -226,27 +240,42 @@ it at one time."
       (lispy--python-middleware-load)
       process)))
 
+(defun lispy--python-eval-string-dwim (str)
+  (setq str (string-trim str))
+  (let ((single-line-p (= (cl-count ?\n str) 0)))
+    (cond
+      ((string-match "^\\[" str)
+       (format "__last__ = %s\nprint(repr(__last__))" str))
+      ((and (or (string-match "\\`\\(\\(?:[., ]\\|\\sw\\|\\s_\\|[][]\\)+\\) += " str)
+                (string-match "\\`\\(([^)]+)\\) *=[^=]" str))
+            (save-match-data
+              (or single-line-p
+                  (and (not (string-match-p "lp\\." str))
+                       (equal (lispy--eval-python
+                               (format "x=lp.is_assignment(\"\"\"%s\"\"\")\nprint (x)" str)
+                               t)
+                              "True")))))
+       (concat str (format "\nprint (repr ((%s)))" (match-string 1 str))))
+      ;; match e.g. "x in array" part of  "for x in array:"
+      ((and single-line-p
+            (string-match "\\`\\([A-Z_a-z0-9]+\\|\\(?:([^)]+)\\)\\) in \\(.*\\)\\'" str))
+       (let ((vars (match-string 1 str))
+             (val (match-string 2 str)))
+         (format "%s = list (%s)[0]\nprint ((%s))" vars val vars)))
+      ((string-match "\\`def \\([a-zA-Z_0-9]+\\)\\s-*(\\s-*self" str)
+       (let ((fname (match-string 1 str))
+             (cname (car (split-string (python-info-current-defun) "\\."))))
+         (concat str
+                 "\n"
+                 (format "lp.rebind('%s', '%s')" cname fname))))
+      (t
+       str))))
+
 (defun lispy--eval-python (str &optional plain)
   "Eval STR as Python code."
   (let ((single-line-p (= (cl-count ?\n str) 0)))
     (unless plain
-      (setq str (string-trim str))
-      (cond ((and (or (string-match "\\`\\(\\(?:[., ]\\|\\sw\\|\\s_\\|[][]\\)+\\) += " str)
-                      (string-match "\\`\\(([^)]+)\\) *=[^=]" str))
-                  (save-match-data
-                    (or single-line-p
-                        (and (not (string-match-p "lp\\." str))
-                             (equal (lispy--eval-python
-                                     (format "x=lp.is_assignment(\"\"\"%s\"\"\")\nprint (x)" str)
-                                     t)
-                                    "True")))))
-             (setq str (concat str (format "\nprint (repr ((%s)))" (match-string 1 str)))))
-            ;; match e.g. "x in array" part of  "for x in array:"
-            ((and single-line-p
-                  (string-match "\\`\\([A-Z_a-z,0-9 ()]+\\) in \\(.*\\)\\'" str))
-             (let ((vars (match-string 1 str))
-                   (val (match-string 2 str)))
-               (setq str (format "%s = list (%s)[0]\nprint ((%s))" vars val vars)))))
+      (setq str (lispy--python-eval-string-dwim str))
       (when (string-match "__file__" str)
         (lispy--eval-python (format "__file__ = '%s'\n" (buffer-file-name)) t))
       (when (and single-line-p (string-match "\\`return \\(.*\\)\\'" str))
@@ -264,7 +293,7 @@ it at one time."
                                      p1 (lispy--python-proc)))
                          p2-output)
                     (cond
-                      ((string-match-p "SyntaxError:" p1-output)
+                      ((string-match-p "SyntaxError:\\|error:" p1-output)
                        (python-shell-send-string-no-output
                         str (lispy--python-proc)))
                       ((null p1-output)
@@ -300,12 +329,13 @@ it at one time."
         ((equal res "")
          (setq lispy-eval-error "(ok)")
          "")
-        ((string-match-p "^<\\(?:map\\|filter\\|generator\\) object" res)
+        ((string-match-p "^<\\(?:map\\|filter\\|generator\\|enumerate\\|zip\\) object" res)
          (let ((last (car (last (split-string str "\n")))))
            (when (string-match "\\`print (repr ((\\(.*\\))))\\'" last)
              (setq str (match-string 1 last))))
          (lispy--eval-python (format "list(%s)" str) t))
         ((string-match-p "SyntaxError:" res)
+         (setq lispy-eval-error res)
          nil)
         (t
          (replace-regexp-in-string "\\\\n" "\n" res))))))
@@ -333,30 +363,21 @@ it at one time."
                     s)))
               parts))))
 
-(defun lispy-dir-string< (a b)
-  (if (string-match "/$" a)
-      (if (string-match "/$" b)
-          (string< a b)
-        t)
-    (if (string-match "/$" b)
-        nil
-      (string< a b))))
-
 (defun lispy-python-symbol-bnd ()
   (let ((bnd (or (bounds-of-thing-at-point 'symbol)
                  (cons (point) (point)))))
     (save-excursion
-     (goto-char (car bnd))
-     (while (progn
-              (skip-chars-backward " ")
-              (lispy-after-string-p "."))
-      (backward-char 1)
-      (skip-chars-backward " ")
-      (if (lispy-after-string-p ")")
-          (backward-sexp 2)
+      (goto-char (car bnd))
+      (while (progn
+               (skip-chars-backward " ")
+               (lispy-after-string-p "."))
+        (backward-char 1)
+        (skip-chars-backward " ")
+        (if (lispy-after-string-p ")")
+            (backward-sexp 2)
           (backward-sexp)))
-     (skip-chars-forward " ")
-     (setcar bnd (point)))
+      (skip-chars-forward " ")
+      (setcar bnd (point)))
     bnd))
 
 (defun lispy-python-completion-at-point ()
@@ -375,17 +396,7 @@ it at one time."
                 (beg (if bnd (car bnd) (point)))
                 (end (if bnd (cdr bnd) (point))))
            (list beg end cands)))
-        ((lispy--in-string-p)
-         (let* ((bnd-1 (lispy--bounds-string))
-                (bnd-2 (or (bounds-of-thing-at-point 'symbol)
-                           (cons (point) (point))))
-                (str (buffer-substring-no-properties
-                      (1+ (car bnd-1))
-                      (1- (cdr bnd-1)))))
-           (list (car bnd-2)
-                 (cdr bnd-2)
-                 (cl-sort (delete "./" (all-completions str #'read-file-name-internal))
-                          #'lispy-dir-string<))))
+        ((lispy-complete-fname-at-point))
         (t
          (let* ((bnd (lispy-python-symbol-bnd))
                 (str (buffer-substring-no-properties

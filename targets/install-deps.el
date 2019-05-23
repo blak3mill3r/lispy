@@ -1,16 +1,22 @@
+(setq melpa-stable (getenv "MELPA_STABLE"))
 (setq package-user-dir
-      (expand-file-name (format ".cask/%s/elpa" emacs-version)))
+      (expand-file-name
+       (format "~/.elpa/%s/elpa"
+               (concat emacs-version (when melpa-stable "-stable")))))
 (message "installing in %s ...\n" package-user-dir)
 (package-initialize)
 (setq package-archives
-      '(("melpa" . "http://melpa.org/packages/")
-        ("gnu" . "http://elpa.gnu.org/packages/")))
+      (list (if melpa-stable
+                '("melpa-stable" . "https://stable.melpa.org/packages/")
+              '("melpa" . "http://melpa.org/packages/"))
+            '("gnu" . "http://elpa.gnu.org/packages/")))
 (package-refresh-contents)
 
 (defconst lispy-dev-packages
   '(iedit
     multiple-cursors
     cider
+    spiral
     slime
     sly
     geiser
@@ -37,4 +43,3 @@
         (package-menu-execute t))
     (error
      (message "All packages up to date"))))
-

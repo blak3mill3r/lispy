@@ -25,14 +25,23 @@
 ;;* Requires
 (require 'lispy)
 (require 'cider-client nil t)
-(require 'cider-interaction nil t)
+(require 'cider-connection nil t)
 (require 'cider-eval nil t)
+(require 'cider-find nil t)
 
 (defcustom lispy-clojure-eval-method 'cider
   "REPL used for eval."
   :type '(choice
           (const :tag "CIDER" cider)
           (const :tag "UNREPL" spiral))
+  :group 'lispy)
+
+(defcustom lispy-cider-connect-method 'cider-jack-in
+  "Function used to create a CIDER connection."
+  :type '(choice
+          (const cider-jack-in)
+          (const cider-connect)
+          (function :tag "Custom"))
   :group 'lispy)
 
 ;;* Namespace
@@ -77,6 +86,10 @@
               e-str))))
       (cond ((eq current-prefix-arg 7)
              (kill-new f-str))
+            ((and (eq current-prefix-arg 0)
+                  (lispy--eval-clojure
+                   "(lispy-clojure/shadow-unmap *ns*)")
+                  nil))
             ((eq lispy-clojure-eval-method 'spiral)
              (lispy--eval-clojure-spiral e-str))
             (t
@@ -96,10 +109,16 @@
 
 (eval-after-load 'cider
   '(progn
-    (cider-add-to-alist 'cider-jack-in-dependencies
-     "org.tcrawley/dynapath" "0.2.5")
-    (cider-add-to-alist 'cider-jack-in-dependencies
-     "com.cemerick/pomegranate" "0.4.0")))
+     (cider-add-to-alist 'cider-jack-in-dependencies
+                         "org.tcrawley/dynapath" "0.2.5")
+     (cider-add-to-alist 'cider-jack-in-dependencies
+                         "com.cemerick/pomegranate" "0.4.0")
+     (cider-add-to-alist 'cider-jack-in-dependencies
+                         "compliment" "0.3.6")
+     (cider-add-to-alist 'cider-jack-in-dependencies
+                         "me.raynes/fs" "1.4.6")))
+
+(declare-function cider-connections "ext:cider-connection")
 
 (defun lispy--eval-clojure (str &optional add-output)
   "Eval STR as Clojure code.
@@ -120,8 +139,8 @@ When ADD-OUTPUT is non-nil, add the standard output to the result."
                     (lispy--eval-clojure-1 ,str ,add-output))))
           (add-hook 'nrepl-connected-hook
                     'lispy--clojure-eval-hook-lambda t)
-          ;; do not try to jack in for me... that's annoying
-          nil)
+          (call-interactively lispy-cider-connect-method)
+          (format "Starting CIDER using %s ..." lispy-cider-connect-method))
       (unless lispy--clojure-middleware-loaded-p
         (lispy--clojure-middleware-load))
       (lispy--eval-clojure-1 str add-output))))
@@ -187,10 +206,10 @@ When ADD-OUTPUT is non-nil, add the standard output to the result."
 
 (defvar spiral-conn-id)
 (defvar spiral-aux-sync-request-timeout)
-(declare-function spiral-projects-as-list "ext:spiral")
-(declare-function spiral-ast-unparse-to-string "ext:spiral")
-(declare-function spiral-loop--send "ext:spiral")
-(declare-function spiral-pending-eval-add "ext:spiral")
+(declare-function spiral-projects-as-list "ext:spiral-project")
+(declare-function spiral-pending-eval-add "ext:spiral-project")
+(declare-function spiral-ast-unparse-to-string "ext:spiral-ast")
+(declare-function spiral-loop--send "ext:spiral-loop")
 
 (defun lispy--eval-clojure-spiral (str)
   (let* ((start (current-time))
@@ -407,6 +426,8 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
   (goto-char (point-min))
   (forward-line (1- line)))
 
+(declare-function archive-zip-extract "arc-mode")
+
 (defun lispy-find-archive (archive path)
   (require 'arc-mode)
   (let ((name (format "%s:%s" archive path)))
@@ -424,7 +445,7 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
 (defun lispy-goto-symbol-clojure (symbol)
   "Goto SYMBOL."
   (lispy--clojure-detect-ns)
-  (let* ((r (read (lispy-eval-clojure
+  (let* ((r (read (lispy--eval-clojure
                    (format "(lispy-clojure/location '%s)" symbol))))
          (url (car r))
          (line (cadr r))
@@ -511,7 +532,7 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
                      (lispy--string-dwim)))
            (sig (read
                  (lispy--eval-clojure
-                  (format "(lispy-clojure/method-signature %s \"%s\")" object method)))))
+                  (format "(lispy-clojure/method-signature (lispy-clojure/reval \"%s\" nil) \"%s\")" object method)))))
       (when (> (length sig) 0)
         (if (string-match "\\`public \\(.*\\)(\\(.*\\))\\'" sig)
             (let ((name (match-string 1 sig))
