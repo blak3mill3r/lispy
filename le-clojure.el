@@ -375,14 +375,19 @@ Besides functions, handles specials, keywords, maps, vectors and sets."
        (expand-file-name "lispy-clojure.clj" lispy-site-directory)))
     (setq lispy--clojure-middleware-loaded-p t)
     (add-hook 'nrepl-disconnected-hook #'lispy--clojure-middleware-unload)
-    (let ((sources-expr
-           (format
-            "(do \n  %s)"
-            (mapconcat
-             (lambda (p) (format "(cemerick.pomegranate/add-classpath %S)" p))
-             cider-jdk-src-paths
-             "\n  "))))
-      (lispy--eval-clojure sources-expr))))
+    ;; I ripped pomegranate out (because I suspect it of fucking things up)
+    ;; I have a tools.deps alias :lispy that adds the clojure dependencies so the lispy features *should* still work
+    ;; I should figure out how to get the jdk source paths on there as well, except that seems to have changed as of JDK 11
+    ;; there's no tools.jar... which is really annoying
+    ;; (let ((sources-expr
+    ;;        (format
+    ;;         "(do \n  %s)"
+    ;;         (mapconcat
+    ;;          (lambda (p) (format "(cemerick.pomegranate/add-classpath %S)" p))
+    ;;          cider-jdk-src-paths
+    ;;          "\n  "))))
+    ;;   (lispy--eval-clojure sources-expr))
+    ))
 
 (defun lispy-flatten--clojure (_arg)
   "Inline a Clojure function at the point of its call."
