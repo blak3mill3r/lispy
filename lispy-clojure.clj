@@ -30,18 +30,23 @@
 (defn use-package [name version]
   (or
    (try
-     (require '[clojure.tools.deps.alpha.repl :refer [add-lib]])
-     (add-lib name {:mvn/version version})
+     (when (find-ns 'cemerick.pomegranate)
+       (use '[cemerick.pomegranate :only (add-dependencies)])
+       (eval `(cemerick.pomegranate/add-dependencies
+               :coordinates [[(quote ~name) ~version]]
+               :repositories (merge cemerick.pomegranate.aether/maven-central
+                                    {"clojars" "https://clojars.org/repo"}))))
+     true
+     (catch Exception e (println "Couldn't add-dependencies" e name version) (throw e)))
+   (try
+     (when (find-ns 'clojure.tools.deps.alpha.repl)
+       
+       (require '[clojure.tools.deps.alpha.repl :refer [add-lib]])
+       (println "lispy-clojure (use-package "name"\""~version"\")")
+       (println (prn-str `(add-lib name {:mvn/version ~version}) ))
+       (eval `(add-lib name {:mvn/version ~version})))
      true
      (catch Exception e (println "Couldn't add-lib" name version)))
-   (try
-     (use '[cemerick.pomegranate :only (add-dependencies)])
-     (add-dependencies
-      :coordinates [[name version]]
-      :repositories (merge cemerick.pomegranate.aether/maven-central
-                           {"clojars" "https://clojars.org/repo"}))
-     true
-     (catch Exception e (println "Couldn't add-dependencies" name version)))
    (println "Coudln't use-package " name version " things are going to be broken")))
 
 (defn expand-file-name [name dir]
@@ -53,13 +58,15 @@
 (use-package 'me.raynes/fs "1.4.6")
 (require '[me.raynes.fs :as fs])
 
-(try
-  (cemerick.pomegranate/add-classpath
-   (expand-file-name "../lib/tools.jar" (System/getProperty "java.home")))
-  true
-  (catch Exception e (println "Couldn't add tools.jar with pomegranate"))
-  ;; can this be done with add-lib ?
-  )
+(when (find-ns 'cemerick.pomegranate)
+  (eval '(try
+           (cemerick.pomegranate/add-classpath
+            (expand-file-name "../lib/tools.jar" (System/getProperty "java.home")))
+           true
+           (catch Exception e (println "Couldn't add tools.jar with pomegranate"))
+           ;; can this be done with add-lib ?
+           )))
+
 (use-package 'cider/orchard "0.3.0")
 (require '[orchard.java.parser :as parser])
 
